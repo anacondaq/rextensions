@@ -9,6 +9,7 @@
 #include "Composer.h"
 #include "ProxyImpl.h"
 #include "Hooks.h"
+#include "MapColorTable.h"
 
 #define PROC_HOOK(NAME) GLOBAL_HOOK_##NAME
 
@@ -77,6 +78,32 @@ public:
 		{
 			ErrorMsg("Can't find mouse");
 		}
+
+		if (!FindCFile())
+		{
+			ErrorMsg("Can't find CFile");
+		}
+	}
+
+	bool FindCFile()
+	{
+		auto query = m_client->FromString("%s%s.gr2")
+			.FindReferences()
+			.FindBelow({
+				0xE8, 0xCC, 0xCC, 0xCC, 0xCC, // call ? (CFile::Open)
+				0x84, 0xC0 // test al, al
+			}, 200, true);
+
+		if (query.Count() == 0)
+		{
+			return false;
+		}
+
+		proxy(CFile)::Open = ProcMem::DecodeCallAddress(query.GetOne());
+
+		// TOOD: Locate CFile::Close
+
+		return true;
 	}
 
 	bool FindMouse()
@@ -401,10 +428,18 @@ bool _AttachHook(T1 &&_Ptr, T2 &&_Fn, const std::string &_Name)
 	return true;
 }
 
+#define DetachHook(PTR, FN) _AttachHook(PTR, FN)
+template<typename T1, typename T2>
+bool DetachHook(T1 &&_Ptr, T2 &&_Fn)
+{
+	return DetourDetach((PVOID *)&_Ptr, (void *)_Fn) == NO_ERROR;
+}
+
+#define AttachMethodHook(CLASS, METHOD) AttachHook(proxy(CLASS) :: METHOD, void_cast(& CLASS##Hook :: METHOD))
+#define DetachMethodHook(CLASS, METHOD) DetachHook(proxy(CLASS) :: METHOD, void_cast(& CLASS##Hook :: METHOD))
+
 bool InstallHooks()
 {
-#define AttachMethodHook(CLASS, METHOD) AttachHook(proxy(CLASS) :: METHOD, void_cast(& CLASS##Hook :: METHOD))
-
 	DetourTransactionBegin();
 
 	if (AttachHook(CheckSystemMessage, CheckSystemMessageHook) &&
@@ -429,9 +464,37 @@ bool InstallHooks()
 	return false;
 }
 
+bool RemoveHooks()
+{
+	DetourTransactionBegin();
+
+	if (DetachHook(CheckSystemMessage, CheckSystemMessageHook) &&
+		DetachMethodHook(CRenderer, DrawScene) &&
+		DetachMethodHook(CModeMgr, Switch) &&
+		DetachMethodHook(UIWindowMgr, MakeWindow) &&
+		DetachMethodHook(CRagConnection, SendPacket) &&
+		DetachMethodHook(CRagConnection, RecvPacket) &&
+		DetachMethodHook(CSession, GetTalkType) &&
+		DetachMethodHook(CWorld, OnEnterFrame) &&
+		DetachMethodHook(CActorPickNode, AddPickInfo) &&
+		DetachMethodHook(UIWindowMgr, HitTest) &&
+		DetachMethodHook(CMouse, ReadState)
+		) 
+	{
+		DetourTransactionCommit();
+
+		return true;
+	}
+
+	DetourTransactionAbort();
+
+	return false;
+}
+
 ProcMem *g_procFinder;
 BinarySearchComposer *g_composer;
 ClientGlobals *g_client;
+bool g_bHooksInstalled;
 
 BOOL APIENTRY DllMain( HMODULE hModule,
                        DWORD  ul_reason_for_call,
@@ -446,7 +509,14 @@ BOOL APIENTRY DllMain( HMODULE hModule,
 			g_composer = new BinarySearchComposer(g_procFinder);
 			g_client = new ClientGlobals(g_composer);
 
-			InstallHooks();
+			g_bHooksInstalled = InstallHooks();
+
+#ifndef DISABLE_MAPCOLORTABLE
+			if (g_bHooksInstalled)
+			{
+				InitMapColorTable();
+			}
+#endif
 		}
 		
 		break;
@@ -456,6 +526,11 @@ BOOL APIENTRY DllMain( HMODULE hModule,
 		delete g_procFinder;
 		delete g_composer;
 		delete g_client;
+
+		if (g_bHooksInstalled)
+		{
+			RemoveHooks();
+		}
 
 		break;
 
@@ -467,4 +542,3 @@ BOOL APIENTRY DllMain( HMODULE hModule,
 
 	return TRUE;
 }
-

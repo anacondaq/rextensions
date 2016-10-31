@@ -1,7 +1,7 @@
 #include "stdafx.h"
 #include "Hooks.h"
 #include "enum.h"
-
+#include "MapColorTable.h"
 #include "astar.h"
 
 #include <chrono>
@@ -12,6 +12,7 @@
 #define MSG_COLOR_INFO 0xFFFF00u
 
 static const auto g_timeBegin = std::chrono::steady_clock::now();
+static bool g_mustUpdateMapColor = false;
 
 #define LOG_VERBOSE 0
 
@@ -273,6 +274,8 @@ static void RequestMove(int x, int y)
 	g_waitingForMove = true;
 }
 
+static size_t g_lastReset = 0;
+
 static void FollowPlan()
 {
 	if (g_playerX == 0 || g_playerY == 0)
@@ -281,9 +284,13 @@ static void FollowPlan()
 	}
 
 	if ((g_goalX == 0 && g_goalY == 0) || g_mustRecalculatePath ||
-		(g_waitingForMove && (int)timeGetTime_() > g_playerMoveStart + 5000))
+		(g_waitingForMove && (int)timeGetTime_() > g_playerMoveStart + 5000 &&
+		timeGetTime_() > g_lastReset + 5000))
 	{
 		PickGoal();
+
+		g_lastReset = timeGetTime_();
+		g_waitingForMove = false;
 	}
 
 	//if (g_mustRecalculatePath)
@@ -627,6 +634,8 @@ void CWorldHook::OnEnterFrame()
 	g_playerDestY = 0;
 
 	proxy(CWorld)::OnEnterFrame(this);
+
+	g_mustUpdateMapColor = true;
 }
 
 // UIWindowMgr
@@ -676,6 +685,22 @@ size_t CModeMgrHook::Switch(int modeType, char *modeName)
 
 size_t CRendererHook::DrawScene()
 {
+#ifndef DISABLE_MAPCOLORTABLE
+	if (g_mustUpdateMapColor)
+	{
+		size_t color;
+
+		sprintf_s(msg, "%s.rsw", g_mapName.c_str());
+
+		if (GetMapColor(msg, color))
+		{
+			g_renderer->m_clearColor = color;
+		}
+
+		g_mustUpdateMapColor = false;
+	}
+#endif
+
 	auto result = proxy(CRenderer)::DrawScene(this);
 
 	if (IsIdleMode())
@@ -769,6 +794,7 @@ size_t CRagConnectionHook::SendPacket(size_t size, char *buf)
 
 int CSessionHook::GetTalkType(const char *chatBuf, enum TALKTYPE *talkType, void *param)
 {
+#ifndef DISABLE_IDLE_MODE
 	if (_strcmpi("/idle", chatBuf) == 0 ||
 		_strcmpi("/auto", chatBuf) == 0)
 	{
@@ -808,6 +834,7 @@ int CSessionHook::GetTalkType(const char *chatBuf, enum TALKTYPE *talkType, void
 
 		return -1;
 	}
+#endif
 
 	//if (chatBuf != nullptr)
 	//{
